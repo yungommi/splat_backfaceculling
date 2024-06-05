@@ -302,10 +302,9 @@ function createWorker(self) {
     // 6*4 + 4 + 4 = 8*4
     // XYZ - Position (Float32)
     // XYZ - Scale (Float32)
-    // nX, nY, nZ - Normals (Float32)
     // RGBA - colors (uint8)
     // IJKL - quaternion/rot (uint8)
-    const rowLength = 3 * 4 + 3 * 4 + 3 * 4 + 4 + 4;
+    const rowLength = 3 * 4 + 3 * 4 + 4 + 4;
     let lastProj = [];
     let depthIndex = new Uint32Array();
     let lastVertexCount = 0;
@@ -366,11 +365,6 @@ function createWorker(self) {
             texdata_f[8 * i + 0] = f_buffer[8 * i + 0];
             texdata_f[8 * i + 1] = f_buffer[8 * i + 1];
             texdata_f[8 * i + 2] = f_buffer[8 * i + 2];
-
-            // Normals (added for normal calculations)
-            texdata_f[8 * i + 3] = f_buffer[8 * i + 6 + 0 ]; // n_x
-            texdata_f[8 * i + 4] = f_buffer[8 * i + 6 + 1]; // n_y
-            texdata_f[8 * i + 5] = f_buffer[8 * i + 6 + 2]; // n_z
 
             // r, g, b, a
             texdata_c[4 * (8 * i + 7) + 0] = u_buffer[32 * i + 24 + 0];
@@ -548,13 +542,12 @@ function createWorker(self) {
         sizeIndex.sort((b, a) => sizeList[a] - sizeList[b]);
         console.timeEnd("sort");
 
-        // 9*4 + 4 + 4 = 11*4
+        // 6*4 + 4 + 4 = 8*4
         // XYZ - Position (Float32)
         // XYZ - Scale (Float32)
-        // nX, nY, nZ - Normals (Float32)
         // RGBA - colors (uint8)
         // IJKL - quaternion/rot (uint8)
-        const rowLength = 3 * 4 + 3 * 4 + 3 * 4 + 4 + 4;
+        const rowLength = 3 * 4 + 3 * 4 + 4 + 4;
         const buffer = new ArrayBuffer(rowLength * vertexCount);
 
         console.time("build buffer");
@@ -563,9 +556,16 @@ function createWorker(self) {
 
             const position = new Float32Array(buffer, j * rowLength, 3);
             const scales = new Float32Array(buffer, j * rowLength + 4 * 3, 3);
-            const normals = new Float32Array(buffer, j * rowLength + 4 * 6, 3);
-            const rgba = new Uint8ClampedArray(buffer, j * rowLength + 4 * 9, 4);
-            const rot = new Uint8ClampedArray(buffer, j * rowLength + 4 * 9 + 4, 4);
+            const rgba = new Uint8ClampedArray(
+                buffer,
+                j * rowLength + 4 * 3 + 4 * 3,
+                4,
+            );
+            const rot = new Uint8ClampedArray(
+                buffer,
+                j * rowLength + 4 * 3 + 4 * 3 + 4,
+                4,
+            );
 
             if (types["scale_0"]) {
                 const qlen = Math.sqrt(
@@ -597,10 +597,6 @@ function createWorker(self) {
             position[0] = attrs.x;
             position[1] = attrs.y;
             position[2] = attrs.z;
-
-            normals[0] = attrs.nx;
-            normals[1] = attrs.ny;
-            normals[2] = attrs.nz;
 
             if (types["f_dc_0"]) {
                 const SH_C0 = 0.28209479177387814;
@@ -671,11 +667,9 @@ in int index;
 
 out vec4 vColor;
 out vec2 vPosition;
-//out float vDotProduct; // Pass the dot product to the fragment shader
 
 void main () {
     uvec4 cen = texelFetch(u_texture, ivec2((uint(index) & 0x3ffu) << 1, uint(index) >> 10), 0);
-    vec3 worldPos = uintBitsToFloat(cen.xyz); // 3D 월드 좌표
     vec4 cam = view * vec4(uintBitsToFloat(cen.xyz), 1);
     vec4 pos2d = projection * cam;
 
@@ -688,7 +682,6 @@ void main () {
     uvec4 cov = texelFetch(u_texture, ivec2(((uint(index) & 0x3ffu) << 1) | 1u, uint(index) >> 10), 0);
     vec2 u1 = unpackHalf2x16(cov.x), u2 = unpackHalf2x16(cov.y), u3 = unpackHalf2x16(cov.z);
     mat3 Vrk = mat3(u1.x, u1.y, u2.x, u1.y, u2.y, u3.x, u2.x, u3.x, u3.y);
-
 
     mat3 J = mat3(
         focal.x / cam.z, 0., -(focal.x * cam.x) / (cam.z * cam.z), 
@@ -711,16 +704,6 @@ void main () {
     vColor = clamp(pos2d.z/pos2d.w+1.0, 0.0, 1.0) * vec4((cov.w) & 0xffu, (cov.w >> 8) & 0xffu, (cov.w >> 16) & 0xffu, (cov.w >> 24) & 0xffu) / 255.0;
     vPosition = position;
 
-    //added for normal calculations
-    //uvec4 normalData = texelFetch(u_texture, ivec2(((uint(index) & 0x3ffu) << 1) | 2u, uint(index) >> 10), 0);
-    //vec3 normal = normalize(uintBitsToFloat(normalData.xyz));
-
-    // View direction calculation
-    //vec3 viewDir = normalize(vec3(view[3].xyz - worldPos));
-
-    // Dot product calculation
-    //vDotProduct = dot(normal, viewDir);
-
     vec2 vCenter = vec2(pos2d) / pos2d.w;
     gl_Position = vec4(
         vCenter 
@@ -732,17 +715,14 @@ void main () {
 
 const fragmentShaderSource = `
 #version 300 es
-precision highp float;s
+precision highp float;
 
 in vec4 vColor;
 in vec2 vPosition;
-//in float vDotProduct; // 내적 값 입력
 
 out vec4 fragColor;
 
 void main () {
-    //if (vDotProduct < 0.0) discard; // Discard fragment if dot product is negative
-
     float A = -dot(vPosition, vPosition);
     if (A < -4.0) discard;
     float B = exp(A) * vColor.a;
@@ -777,7 +757,7 @@ async function main() {
     if (req.status != 200)
         throw new Error(req.status + " Unable to load " + req.url);
 
-    const rowLength = 3 * 4 + 3 * 4 + 3 * 4 + 4 + 4;
+    const rowLength = 3 * 4 + 3 * 4 + 4 + 4;
     const reader = req.body.getReader();
     let splatData = new Uint8Array(req.headers.get("content-length"));
 
